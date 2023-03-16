@@ -24,50 +24,58 @@ int main()
         return 0;
     }
 
-    SOCKADDR_IN servAdr;
-    memset(&servAdr, 0, sizeof(servAdr));
-    servAdr.sin_family = AF_INET;
-    servAdr.sin_addr.s_addr = ::htonl(INADDR_ANY);
-    servAdr.sin_port = ::htons(7777);
+    // SOCKET OPTION
+     
+    // SO_KEEPALIVE -> 주기적으로 연결 상태 확인 여부 (TCP Only)
+    // 상대방이 연결을 끊는다면?? -> TCP Layer에서 끊어진 연결 감진    
+    bool enable = true;
+    ::setsockopt(servSock, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<char*>(&enable), sizeof(enable));
 
-    if (SOCKET_ERROR == bind(servSock, reinterpret_cast<SOCKADDR*>(&servAdr), sizeof(servAdr)))
-    {
-        ErrHandling();
-        return 0;
-    }
+    // SO_LINGER = 지연
+    // onoff = 0이면 closesocket()이 바로 리턴, 아니면 linger초 만큼 대기 (default 0)
+    // linger : 대기시간
+    LINGER linger;
+    linger.l_onoff = 1;
+    linger.l_linger = 5;
+    ::setsockopt(servSock, SOL_SOCKET, SO_LINGER, reinterpret_cast<char*>(&linger), sizeof(linger));
 
-    while (true)
-    {
-        char recvBuf[1000];
-        SOCKADDR_IN clntAdrInfo;
-        memset(&clntAdrInfo, 0, sizeof(clntAdrInfo));
-        int clntAdrSize = sizeof(clntAdrInfo);
-        int recvSize = ::recvfrom(servSock, recvBuf, sizeof(recvBuf), 0, reinterpret_cast<SOCKADDR*>(&clntAdrInfo), &clntAdrSize);
+    // Half-Close
+    // SD_SEND : send 금지
+    // SD_RECV : recv 금지
+    // SD_BOTH : 둘다 막음
+    //::shutdown(servSock, SD_SEND);
+
+    // SO_SNDBUF = 송신 버퍼 크기
+    // SO_RCVBUF = 수신 버퍼 크기
     
-        if (recvSize == SOCKET_ERROR)
-        {
-            ErrHandling();
-            return 0;
-        }
-        else if (recvSize == 0)
-        {
-            std::cout << "Client Exit!!" << std::endl;
-            break;
-        }
+    int sendBufSize;
+    int optionLen = sizeof(sendBufSize);
+    ::getsockopt(servSock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&sendBufSize), &optionLen);
 
-        std::cout << "Recv Data Len: " << recvSize << std::endl;
-        std::cout << "Recv Data: " << recvBuf << std::endl;
+    std::cout << "Send Buf Size: " << sendBufSize << std::endl;
 
-        int sendSize = ::sendto(servSock, recvBuf, sizeof(recvBuf), 0, reinterpret_cast<SOCKADDR*>(&clntAdrInfo), sizeof(clntAdrInfo));
-        if (sendSize <= 0)
-        {
-            ErrHandling();
-            return 0;
-        }
+    int recvBufSize;
+    optionLen = sizeof(recvBufSize);
+    ::getsockopt(servSock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&recvBufSize), &optionLen);
 
-        std::cout << "Send Data Len: " << sendSize << std::endl;
-        this_thread::sleep_for(1s);
+    std::cout << "Recv Buf Size: " << recvBufSize << std::endl;
+
+    // SO_REUSEADDR
+    // IP 주소 및 PORT 재 사용
+    {
+        bool enable = true;
+        ::setsockopt(servSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&enable), sizeof(enable));
     }
+
+    // IPPROTO_TCP
+    // TCP_NODELAY = Nagle Algorithm 
+    // 장점: 작은 패킷이 불필요하게 많이 생성되는 일 방지
+    // 단점: 반응 시간 손해
+    {
+        bool enable = true;
+        ::setsockopt(servSock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char*>(&enable), sizeof(enable));
+    }
+
 
     ::closesocket(servSock);
     ::WSACleanup();
