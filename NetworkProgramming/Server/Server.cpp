@@ -4,6 +4,7 @@
 #include <MSWSock.h>
 #include <WS2tcpip.h>
 #include <thread>
+#include <vector>
 using namespace std;
 #pragma comment(lib, "ws2_32.lib")
 
@@ -13,6 +14,15 @@ int ErrHandling()
     std::cout << errCode << std::endl;
     return errCode;
 }
+
+const int kBUF_SIZE = 1000;
+struct Session
+{
+    SOCKET socket = INVALID_SOCKET;
+    char recvBuf[kBUF_SIZE];
+    int recvBytes = 0;
+    int sendBytes = 0;
+};
 
 int main()
 {
@@ -51,62 +61,94 @@ int main()
         return 0;
     }
 
-    SOCKADDR_IN clntAdr;
-    int clntAdrSz = sizeof(clntAdr);
+    // select 모델
+    
+    std::vector<Session> sessions;
+    sessions.reserve(1000);
+    FD_SET readSet;
+    FD_SET writeSet;
 
-    // Accept
     while (true)
     {
-        SOCKET clntSock = ::accept(listenSock, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
-        if (clntSock == INVALID_SOCKET)
+        // 소켓 set 초기화
+        FD_ZERO(&readSet);
+        FD_ZERO(&writeSet);
+
+        // ListenSocket 등록
+        FD_SET(listenSock, &readSet);
+
+        // 소켓 등록
+        for (Session& s : sessions)
         {
-            if (::WSAGetLastError() == WSAEWOULDBLOCK)
-                continue;
+            if (s.recvBytes <= s.sendBytes)
+                FD_SET(s.socket, &readSet);
             else
-                break;
+                FD_SET(s.socket, &writeSet);
         }
 
-        std::cout << "Client Connected" << std::endl;
+        FD_SET copyRead, copyWrite;
+        copyRead = readSet;
+        copyWrite = writeSet;
 
-        // Recv
-        while (true)
+        // [옵션] 마지막 timeout 인자 설정 가능
+        int retVal = ::select(0, &readSet, &writeSet, nullptr, nullptr);
+        if (retVal == SOCKET_ERROR)
         {
-            char recvBuf[1000];
-            int recvSize = ::recv(clntSock, recvBuf, sizeof(recvBuf), 0);
-            if (recvSize == SOCKET_ERROR)
+            ErrHandling();
+            break;
+        }
+
+        // Listener 소켓 체크
+        if (FD_ISSET(listenSock, &readSet))
+        {
+            SOCKADDR_IN clntAdr;
+            int clntAdrSz = sizeof(clntAdr);
+
+            SOCKET clntSock = ::accept(listenSock, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
+            if (clntSock != INVALID_SOCKET)
             {
-                if (::WSAGetLastError() == WSAEWOULDBLOCK)
-                    continue;
-                
-                ErrHandling();
-                return 0;
+                std::cout << "Client Connected" << std::endl;
+                sessions.push_back(Session{ clntSock });
             }
-            else if (recvSize == 0)
+        }
+
+        for (Session& s : sessions)
+        {
+            // Read
+            if (FD_ISSET(s.socket, &readSet))
             {
-                std::cout << "Client Terminate" << std::endl;
-                break;
-            } 
-            
-            std::cout << "Recv Len: " << recvSize << std::endl;
-            std::cout << "Recv Data: " << recvBuf << std::endl;
-            
-            // Send
-            while (true)
+                int recvSize = ::recv(s.socket, s.recvBuf, kBUF_SIZE, 0);
+                if (recvSize <= 0)
+                {
+                    // TODO : sessions 제거
+                    continue;
+                }
+
+                s.recvBytes = recvSize;
+            }
+
+            // Write
+            if (FD_ISSET(s.socket, &writeSet))
             {
-                int sendSize = ::send(clntSock, recvBuf, recvSize, 0);
+                // 블로킹 소켓 -> 모든 데이터 다 보냄
+                // 논 블로킹 소켓 -> 일부 데이터만 보낼 수 있음.(상대의 수신 버퍼 상태에 의존)
+                int sendSize = ::send(s.socket, &s.recvBuf[s.sendBytes], s.recvBytes - s.sendBytes, 0);
                 if (sendSize == SOCKET_ERROR)
                 {
-                    if (::WSAGetLastError() == WSAEWOULDBLOCK) continue;
+                    // TODO : sessions 제거
+                    continue;
                 }
-                else if (sendSize == 0)
+
+                s.sendBytes += sendSize;
+                if (s.sendBytes == s.recvBytes)
                 {
-                    std::cout << "Client Connection Terminate" << std::endl;
+                    s.sendBytes = s.recvBytes = 0;
                 }
-                
-                break;
             }
         }
     }
+
+
 
 
     ::closesocket(listenSock);
