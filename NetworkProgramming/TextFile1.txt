@@ -10,7 +10,7 @@ recv, recvfrom - 수신 버퍼에 도착한 데이터가 있고, 해당 데이터를 유저레벨 버퍼에
 논블로킹 소켓.
 
 
-Select 모델 = (select 함수 호출이 핵심)
+Select 모델 = (select 함수 호출이 핵심) { 동기 함수 }
 1. 소켓 함수 호출이 성골할 시점을 미리 알 수 있다.
 2. non-blocking 문제 상황) 
  - 수신 버퍼에 데이터가 없을 때 read 함수 호출
@@ -18,3 +18,40 @@ Select 모델 = (select 함수 호출이 핵심)
 3. select 함수 호출 시 장점 
  - 블로킹 소켓 : 조건이 만족되지 않아서 블로킹되는 상황 예방
  - 논블로킹 소켓 : 조건이 만족되지 않아서 불필요하게 반복 체크하는 상황 예방
+
+ 장점:
+  - 구현의 용이성
+  - 리눅스와의 호환성
+
+ 단점:
+  - 매 루프마다, 초기화 및 등록의 과정을 거친다.
+  - set에 등록된 모든 소켓을 돌면서 어떤 소켓이 준비가 되었는 지 확인하는 과정 필요
+  - 64개 제한...
+
+WSAEventSelect = (WSAEventSelect 함수 핵심)
+ - 소켓과 관련된 네트워크 이벤트를 [이벤트 객체]를 통해서 감지
+ 
+ 생성 : WSACreateEvent (수동 리셋 Manual-Reset 모드 + Non-Signaled 상태 시작)
+ 삭제 : WSACloseEvent
+ Event 상태 확인 : WSAWaitForMultipleEvents 
+ 구체적인 상태 확인 : WSAEnumNetworkEvents
+
+주의 사항
+ - WSAEventSelect 함수를 호출할 경우, 해당 소켓은 자동으로 넌블로킹 모드 전환
+ - accept() 함수가 리턴하는 소켓은 listenSocket과 동일한 속성을 갖는다.
+   따라서 clntSock은 FD_READ, FD_WRITE 등을 다시 등록 필요.
+ - 드물게 WSAEWOULDBLOCK 오류가 발생, 따라서 예외 처리 필요
+ 
+ 중요!!!)
+ - 이벤트 발생 시, 적절한 소켓 함수 호출 필요
+   만일 그렇지 않을 시 동일 네크워크 이벤트가 발생 X
+   ex) FD_READ 이벤트 발생 시 recv 함수 호출하지 않을 경우 FD_READ 뜨지 않음
+
+ 장점:
+  - Select 방식과는 다르게 한번 event와 socket을 연결해 주면 된다.
+  - 비동기 방식 사용
+
+ 단점:
+  - 호환성이 좋지 않음.(WINDOW 서버에서만 사용 가능)
+  - WSAWaitForMultipleEvents 함수가 index를 알려주기 때문에 반복문을
+    통해 어떤 소켓인지 찾아야 되는 불편함 존재.

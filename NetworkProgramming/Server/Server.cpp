@@ -61,95 +61,91 @@ int main()
         return 0;
     }
 
-    // select 모델
-    
-    std::vector<Session> sessions;
-    sessions.reserve(1000);
-    FD_SET readSet;
-    FD_SET writeSet;
+     // WSAEventSelect 모델
+    vector<WSAEVENT> wsaEvents;
+    vector<Session> sessions;
+    sessions.reserve(100);
+
+    WSAEVENT listenEvent = ::WSACreateEvent();
+    wsaEvents.push_back(listenEvent);
+    sessions.push_back(Session{ listenSock });
+
+    if (SOCKET_ERROR == ::WSAEventSelect(listenSock, listenEvent, FD_ACCEPT | FD_CLOSE))
+        return 0;
 
     while (true)
     {
-        // 소켓 set 초기화
-        FD_ZERO(&readSet);
-        FD_ZERO(&writeSet);
+        int index = ::WSAWaitForMultipleEvents(wsaEvents.size(), &wsaEvents[0], false, INFINITE, false);
+        if (index == WSA_WAIT_FAILED)
+            continue;
+        
+        index -= WSA_WAIT_EVENT_0;
+        WSANETWORKEVENTS networkEvents;
+        if (SOCKET_ERROR == ::WSAEnumNetworkEvents(sessions[index].socket, wsaEvents[index], &networkEvents))
+            continue;
 
-        // ListenSocket 등록
-        FD_SET(listenSock, &readSet);
-
-        // 소켓 등록
-        for (Session& s : sessions)
+        // Listen Socket 체크
+        if (networkEvents.lNetworkEvents & FD_ACCEPT)
         {
-            if (s.recvBytes <= s.sendBytes)
-                FD_SET(s.socket, &readSet);
-            else
-                FD_SET(s.socket, &writeSet);
-        }
+            if (networkEvents.iErrorCode[FD_ACCEPT_BIT] != 0)
+                continue;
 
-        FD_SET copyRead, copyWrite;
-        copyRead = readSet;
-        copyWrite = writeSet;
-
-        // [옵션] 마지막 timeout 인자 설정 가능
-        int retVal = ::select(0, &readSet, &writeSet, nullptr, nullptr);
-        if (retVal == SOCKET_ERROR)
-        {
-            ErrHandling();
-            break;
-        }
-
-        // Listener 소켓 체크
-        if (FD_ISSET(listenSock, &readSet))
-        {
             SOCKADDR_IN clntAdr;
             int clntAdrSz = sizeof(clntAdr);
 
-            SOCKET clntSock = ::accept(listenSock, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
+            SOCKET clntSock = ::accept(sessions[index].socket, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
             if (clntSock != INVALID_SOCKET)
             {
-                std::cout << "Client Connected" << std::endl;
+                std::cout << "Client Connect" << std::endl;
+
+                WSAEVENT hEvent = ::WSACreateEvent();
+                wsaEvents.push_back(hEvent);
                 sessions.push_back(Session{ clntSock });
+
+                if (SOCKET_ERROR == ::WSAEventSelect(clntSock, hEvent, FD_READ | FD_WRITE | FD_CLOSE))
+                    return 0;
             }
         }
 
-        for (Session& s : sessions)
+        if ((networkEvents.lNetworkEvents & FD_READ) || (networkEvents.lNetworkEvents & FD_WRITE))
         {
-            // Read
-            if (FD_ISSET(s.socket, &readSet))
+            if ( (networkEvents.lNetworkEvents & FD_READ) && (networkEvents.iErrorCode[FD_READ_BIT] != 0) ) continue;
+            if ( (networkEvents.lNetworkEvents & FD_WRITE) && (networkEvents.iErrorCode[FD_WRITE_BIT] != 0) ) continue;
+
+            Session& session = sessions[index];
+            if (session.recvBytes == 0)
             {
-                int recvSize = ::recv(s.socket, s.recvBuf, kBUF_SIZE, 0);
+                int recvSize = ::recv(session.socket, session.recvBuf, kBUF_SIZE, 0);
                 if (recvSize <= 0)
                 {
-                    // TODO : sessions 제거
-                    continue;
+                    if (WSAGetLastError() == WSAEWOULDBLOCK) continue;
+                    
+                    // TODO 종료
                 }
 
-                s.recvBytes = recvSize;
+                session.recvBytes = recvSize;
+                std::cout << "Recv Len: " << recvSize << std::endl;
             }
-
-            // Write
-            if (FD_ISSET(s.socket, &writeSet))
+            
+            if (session.recvBytes > session.sendBytes)
             {
-                // 블로킹 소켓 -> 모든 데이터 다 보냄
-                // 논 블로킹 소켓 -> 일부 데이터만 보낼 수 있음.(상대의 수신 버퍼 상태에 의존)
-                int sendSize = ::send(s.socket, &s.recvBuf[s.sendBytes], s.recvBytes - s.sendBytes, 0);
-                if (sendSize == SOCKET_ERROR)
+                int sendSize = ::send(session.socket, &session.recvBuf[session.sendBytes], session.recvBytes - session.sendBytes, 0);
+
+                session.sendBytes += sendSize;
+                if (session.sendBytes == session.recvBytes)
                 {
-                    // TODO : sessions 제거
-                    continue;
+                    session.sendBytes = session.recvBytes = 0;
                 }
 
-                s.sendBytes += sendSize;
-                if (s.sendBytes == s.recvBytes)
-                {
-                    s.sendBytes = s.recvBytes = 0;
-                }
+                std::cout << "Send Data: " << sendSize << std::endl;
             }
         }
+
+        if (networkEvents.lNetworkEvents & FD_CLOSE)
+        {
+            // TODO Remove
+        }
     }
-
-
-
 
     ::closesocket(listenSock);
     ::WSACleanup();
