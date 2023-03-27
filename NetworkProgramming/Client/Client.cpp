@@ -1,5 +1,4 @@
-﻿
-#include <iostream>
+﻿#include <iostream>
 #include <WinSock2.h>
 #include <MSWSock.h>
 #include <WS2tcpip.h>
@@ -55,47 +54,40 @@ int main()
     std::cout << "Connection Success" << std::endl;
 
     // Send
+    char sendBuf[100] = "Hello World";
+    HANDLE hEvent = ::WSACreateEvent();
+    WSAOVERLAPPED overlapped = {};
+    overlapped.hEvent = hEvent;
     while (true)
     {
-        char sndBuf[100] = "Hello World";
-        int sendSize = ::send(clntSock, sndBuf, sizeof(sndBuf), 0);
-        if (sendSize == SOCKET_ERROR)
-        {
-            if (::WSAGetLastError() == WSAEWOULDBLOCK) continue;
-        }
-        else if (sendSize == 0)
-        {
-            std::cout << "Client Connection Terminate" << std::endl;
-        }
+        WSABUF wsaBuf;
+        wsaBuf.buf = sendBuf;
+        wsaBuf.len = sizeof(sendBuf);
 
-        std::cout << "Send Len: " << sendSize << std::endl;
-           
-        while (true)
+        DWORD sendLen = 0;
+        DWORD flags = 0;
+
+        if (SOCKET_ERROR == ::WSASend(clntSock, &wsaBuf, 1, &sendLen, flags, &overlapped, nullptr))
         {
-            char recvBuf[1000];
-            int recvSize = ::recv(clntSock, recvBuf, sizeof(recvBuf), 0);
-            if (recvSize == SOCKET_ERROR)
+            if (::WSAGetLastError() == WSA_IO_PENDING)
             {
-                if (::WSAGetLastError() == WSAEWOULDBLOCK)
-                    continue;
-
-                ErrHandling();
-                return 0;
+                ::WSAWaitForMultipleEvents(1, &hEvent, true, WSA_INFINITE, false);
+                ::WSAGetOverlappedResult(clntSock, &overlapped, &sendLen, false, &flags);
             }
-            else if (recvSize == 0)
+            else
             {
-                std::cout << "Client Terminate" << std::endl;
+                // TODO 종료
                 break;
             }
-
-            std::cout << "Recv Len: " << recvSize << std::endl;
-            std::cout << "Recv Data: " << recvBuf << std::endl;
-            break;
         }
+
+        std::cout << "Send Data Len = " << sendLen << std::endl;
+        this_thread::sleep_for(100ms);
     }
-   
+
     ::closesocket(clntSock);
-    
+    ::WSACloseEvent(hEvent);
+
     // WinSock terminate
     ::WSACleanup();
     return 0;

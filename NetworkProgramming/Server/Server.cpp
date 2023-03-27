@@ -1,5 +1,4 @@
-﻿
-#include <iostream>
+﻿#include <iostream>
 #include <WinSock2.h>
 #include <MSWSock.h>
 #include <WS2tcpip.h>
@@ -21,7 +20,7 @@ struct Session
     SOCKET socket = INVALID_SOCKET;
     char recvBuf[kBUF_SIZE];
     int recvBytes = 0;
-    int sendBytes = 0;
+    WSAOVERLAPPED overlapped = {};
 };
 
 int main()
@@ -61,90 +60,59 @@ int main()
         return 0;
     }
 
-     // WSAEventSelect 모델
-    vector<WSAEVENT> wsaEvents;
-    vector<Session> sessions;
-    sessions.reserve(100);
+    std::cout << "Accept" << std::endl;
 
-    WSAEVENT listenEvent = ::WSACreateEvent();
-    wsaEvents.push_back(listenEvent);
-    sessions.push_back(Session{ listenSock });
-
-    if (SOCKET_ERROR == ::WSAEventSelect(listenSock, listenEvent, FD_ACCEPT | FD_CLOSE))
-        return 0;
-
+    // Overlapped 모델 ( 이벤트 기반 )
     while (true)
     {
-        int index = ::WSAWaitForMultipleEvents(wsaEvents.size(), &wsaEvents[0], false, INFINITE, false);
-        if (index == WSA_WAIT_FAILED)
-            continue;
-        
-        index -= WSA_WAIT_EVENT_0;
-        WSANETWORKEVENTS networkEvents;
-        if (SOCKET_ERROR == ::WSAEnumNetworkEvents(sessions[index].socket, wsaEvents[index], &networkEvents))
-            continue;
-
-        // Listen Socket 체크
-        if (networkEvents.lNetworkEvents & FD_ACCEPT)
+        SOCKET clntSock;
+        SOCKADDR_IN clntAdr;
+        int clntAdrSz = sizeof(clntAdr);
+        while (true)
         {
-            if (networkEvents.iErrorCode[FD_ACCEPT_BIT] != 0)
-                continue;
+            clntSock = ::accept(listenSock, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
+            if (clntSock != INVALID_SOCKET) break;
 
-            SOCKADDR_IN clntAdr;
-            int clntAdrSz = sizeof(clntAdr);
+            if (::WSAGetLastError() == WSAEWOULDBLOCK) continue;
 
-            SOCKET clntSock = ::accept(sessions[index].socket, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
-            if (clntSock != INVALID_SOCKET)
-            {
-                std::cout << "Client Connect" << std::endl;
-
-                WSAEVENT hEvent = ::WSACreateEvent();
-                wsaEvents.push_back(hEvent);
-                sessions.push_back(Session{ clntSock });
-
-                if (SOCKET_ERROR == ::WSAEventSelect(clntSock, hEvent, FD_READ | FD_WRITE | FD_CLOSE))
-                    return 0;
-            }
+            return -1;
         }
 
-        if ((networkEvents.lNetworkEvents & FD_READ) || (networkEvents.lNetworkEvents & FD_WRITE))
-        {
-            if ( (networkEvents.lNetworkEvents & FD_READ) && (networkEvents.iErrorCode[FD_READ_BIT] != 0) ) continue;
-            if ( (networkEvents.lNetworkEvents & FD_WRITE) && (networkEvents.iErrorCode[FD_WRITE_BIT] != 0) ) continue;
+        std::cout << "Client Connect" << std::endl;
 
-            Session& session = sessions[index];
-            if (session.recvBytes == 0)
+        Session session{ clntSock, };
+        HANDLE hEvent = ::WSACreateEvent();
+        session.overlapped.hEvent = hEvent;
+
+        while (true)
+        {
+            WSABUF wsaBuf;
+            wsaBuf.buf = session.recvBuf;
+            wsaBuf.len = kBUF_SIZE;
+
+            DWORD recvLen = 0;
+            DWORD flags = 0;
+
+            if (SOCKET_ERROR == ::WSARecv(clntSock, &wsaBuf, 1, &recvLen, &flags, &session.overlapped, nullptr))
             {
-                int recvSize = ::recv(session.socket, session.recvBuf, kBUF_SIZE, 0);
-                if (recvSize <= 0)
+                if (::WSAGetLastError() == WSA_IO_PENDING)
                 {
-                    if (WSAGetLastError() == WSAEWOULDBLOCK) continue;
-                    
-                    // TODO 종료
+                    // PENDING
+                    ::WSAWaitForMultipleEvents(1, &hEvent, true, WSA_INFINITE, false);
+                    ::WSAGetOverlappedResult(session.socket, &session.overlapped, &recvLen, false, &flags);
                 }
-
-                session.recvBytes = recvSize;
-                std::cout << "Recv Len: " << recvSize << std::endl;
-            }
-            
-            if (session.recvBytes > session.sendBytes)
-            {
-                int sendSize = ::send(session.socket, &session.recvBuf[session.sendBytes], session.recvBytes - session.sendBytes, 0);
-
-                session.sendBytes += sendSize;
-                if (session.sendBytes == session.recvBytes)
+                else
                 {
-                    session.sendBytes = session.recvBytes = 0;
+                    // TODO : 문제 있는 상황
+                    break;
                 }
-
-                std::cout << "Send Data: " << sendSize << std::endl;
             }
-        }
 
-        if (networkEvents.lNetworkEvents & FD_CLOSE)
-        {
-            // TODO Remove
+            std::cout << "Data Recv Len = " << recvLen << std::endl;
+            std::cout << "Data Recv: " << session.recvBuf << std::endl;
         }
+        ::closesocket(session.socket);
+        ::WSACloseEvent(hEvent);
     }
 
     ::closesocket(listenSock);
