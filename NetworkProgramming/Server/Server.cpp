@@ -17,19 +17,47 @@ int ErrHandling()
 const int kBUF_SIZE = 1000;
 struct Session
 {
-    WSAOVERLAPPED overlapped = {};
     SOCKET socket = INVALID_SOCKET;
     char recvBuf[kBUF_SIZE];
     int recvBytes = 0;
 };
 
-void WINAPI CallBackRcv(DWORD error, DWORD recvLen, LPWSAOVERLAPPED pOverlapped, DWORD flags)
+enum IO_TYPE
 {
-    cout << "CALL BACK Data Recv Len = " << recvLen << std::endl;
-    // TODO 에코라면 WSASend();
+    READ,
+    WRITE,
+    CONNECT,
+    ACCEPT
+};
 
-    // 이런식으로 사용
-    Session* pSession = (Session*)pOverlapped;
+struct OverlappedEx
+{
+    WSAOVERLAPPED overlapped = {};
+    int ioType;
+};
+
+void WorkerThread(HANDLE iocpHandle)
+{
+    while (true)
+    {
+        DWORD bytesTransferred = 0;
+        Session* pSession = nullptr;
+        OverlappedEx* pOverlappedEx = nullptr;
+        BOOL ret = ::GetQueuedCompletionStatus(iocpHandle, &bytesTransferred, (PULONG_PTR)&pSession, 
+            (LPOVERLAPPED*)&pOverlappedEx, INFINITE);
+
+        if (ret == 0 || bytesTransferred == 0) continue;
+
+        std::cout << "Recv Data IOCP" << std::endl;
+
+        WSABUF wsaBuf;
+        wsaBuf.buf = pSession->recvBuf;
+        wsaBuf.len = kBUF_SIZE;
+
+        DWORD recvLen = 0;
+        DWORD falgs = 0;
+        ::WSARecv(pSession->socket, &wsaBuf, 1, &recvLen, &falgs, &pOverlappedEx->overlapped, NULL);
+    }
 }
 
 int main()
@@ -39,13 +67,6 @@ int main()
 
     SOCKET listenSock = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listenSock == INVALID_SOCKET)
-    {
-        ErrHandling();
-        return 0;
-    }
-
-    u_long lMode = 1; // Set non-blocking mode socket
-    if (SOCKET_ERROR == ::ioctlsocket(listenSock, FIONBIO, &lMode))
     {
         ErrHandling();
         return 0;
@@ -71,55 +92,47 @@ int main()
 
     std::cout << "Accept" << std::endl;
 
+    std::vector<Session*> sessionManager;
+    HANDLE iocpHandle = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+
+    std::vector<thread> v;
+    for (int i = 0; i < 5; ++i)
+    {
+        v.push_back(thread([=]() { WorkerThread(iocpHandle); }));
+    }
+
     // Overlapped 모델 ( 이벤트 기반 )
     while (true)
     {
         SOCKET clntSock;
         SOCKADDR_IN clntAdr;
         int clntAdrSz = sizeof(clntAdr);
-        while (true)
-        {
-            clntSock = ::accept(listenSock, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
-            if (clntSock != INVALID_SOCKET) break;
+        clntSock = ::accept(listenSock, reinterpret_cast<SOCKADDR*>(&clntAdr), &clntAdrSz);
+        if (clntSock == INVALID_SOCKET) return 0;
 
-            if (::WSAGetLastError() == WSAEWOULDBLOCK) continue;
-
-            return -1;
-        }
+        Session* pSession = new Session();
+        pSession->socket = clntSock;
+        sessionManager.push_back(pSession);
 
         std::cout << "Client Connect" << std::endl;
-
-        Session session{ clntSock, };
         
-        while (true)
-        {
-            WSABUF wsaBuf;
-            wsaBuf.buf = session.recvBuf;
-            wsaBuf.len = kBUF_SIZE;
+        // 등록
+        ::CreateIoCompletionPort((HANDLE)clntSock, iocpHandle, /*Key*/(ULONG_PTR)pSession, 0);
 
-            DWORD recvLen = 0;
-            DWORD flags = 0;
+        WSABUF wsaBuf;
+        wsaBuf.buf = pSession->recvBuf;
+        wsaBuf.len = kBUF_SIZE;
 
-            if (SOCKET_ERROR == ::WSARecv(clntSock, &wsaBuf, 1, &recvLen, &flags, &session.overlapped, CallBackRcv))
-            {
-                if (::WSAGetLastError() == WSA_IO_PENDING)
-                {
-                    ::SleepEx(WSA_INFINITE, TRUE);
-                }
-                else
-                {
-                    // TODO : 문제 있는 상황
-                    break;
-                }
-            }
-            else
-            {
-                std::cout << "Data Recv Len = " << recvLen << std::endl;
-            }
+        OverlappedEx* pOverlappedEx = new OverlappedEx;
+        pOverlappedEx->ioType = IO_TYPE::READ;
+        DWORD recvLen = 0;
+        DWORD falgs = 0;
 
-        }
-        ::closesocket(session.socket);
+        ::WSARecv(clntSock, &wsaBuf, 1, &recvLen, &falgs, &pOverlappedEx->overlapped, NULL);
+
     }
+
+    for (int i = 0; i < 5; ++i) v[i].join();
 
     ::closesocket(listenSock);
     ::WSACleanup();
