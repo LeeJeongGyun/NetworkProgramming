@@ -17,11 +17,20 @@ int ErrHandling()
 const int kBUF_SIZE = 1000;
 struct Session
 {
+    WSAOVERLAPPED overlapped = {};
     SOCKET socket = INVALID_SOCKET;
     char recvBuf[kBUF_SIZE];
     int recvBytes = 0;
-    WSAOVERLAPPED overlapped = {};
 };
+
+void WINAPI CallBackRcv(DWORD error, DWORD recvLen, LPWSAOVERLAPPED pOverlapped, DWORD flags)
+{
+    cout << "CALL BACK Data Recv Len = " << recvLen << std::endl;
+    // TODO 에코라면 WSASend();
+
+    // 이런식으로 사용
+    Session* pSession = (Session*)pOverlapped;
+}
 
 int main()
 {
@@ -81,9 +90,7 @@ int main()
         std::cout << "Client Connect" << std::endl;
 
         Session session{ clntSock, };
-        HANDLE hEvent = ::WSACreateEvent();
-        session.overlapped.hEvent = hEvent;
-
+        
         while (true)
         {
             WSABUF wsaBuf;
@@ -93,13 +100,11 @@ int main()
             DWORD recvLen = 0;
             DWORD flags = 0;
 
-            if (SOCKET_ERROR == ::WSARecv(clntSock, &wsaBuf, 1, &recvLen, &flags, &session.overlapped, nullptr))
+            if (SOCKET_ERROR == ::WSARecv(clntSock, &wsaBuf, 1, &recvLen, &flags, &session.overlapped, CallBackRcv))
             {
                 if (::WSAGetLastError() == WSA_IO_PENDING)
                 {
-                    // PENDING
-                    ::WSAWaitForMultipleEvents(1, &hEvent, true, WSA_INFINITE, false);
-                    ::WSAGetOverlappedResult(session.socket, &session.overlapped, &recvLen, false, &flags);
+                    ::SleepEx(WSA_INFINITE, TRUE);
                 }
                 else
                 {
@@ -107,12 +112,13 @@ int main()
                     break;
                 }
             }
+            else
+            {
+                std::cout << "Data Recv Len = " << recvLen << std::endl;
+            }
 
-            std::cout << "Data Recv Len = " << recvLen << std::endl;
-            std::cout << "Data Recv: " << session.recvBuf << std::endl;
         }
         ::closesocket(session.socket);
-        ::WSACloseEvent(hEvent);
     }
 
     ::closesocket(listenSock);

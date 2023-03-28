@@ -73,3 +73,31 @@ WSAEventSelect = (WSAEventSelect 함수 핵심)
  - 실패했으면 사유 확인
 
  // WSASend, WSARecv, AcceptEx, ConnectEx
+
+
+ OVERLAPPED IO (CallBack vs Event)
+
+  - CallBack(Completion Routine) 방식은 소켓 당 이벤트를 묶어줄 필요가 없는 장점이 존재
+  - 64개의 제약을 받지 않음.
+
+
+Select 모델
+- 장점) 윈도우/리눅스 호환
+- 단점) 성능 최하 (매번 소켓 초기화 및 세팅)
+        64개 제한
+
+WSAEventSelect 모델
+- 장점) 비교적 뛰어난 성능
+- 단점) 64개 제한
+
+Overlapped (이벤트 기반)
+- 장점) 성능
+- 단점) 64개 제한
+
+Overlapped (콜백 기반)
+- 장점) 성능
+- 단점) 모든 비동기 소켓 함수에서 사용 가능하진 않음(AcceptEx 불가능)
+        빈번한 Alertable Wait으로 인한 성능 저하
+        APC가 스레드 별로 존재하기 때문에 일감의 분배가 불가능..
+
+ReActor(~뒤늦게) / ProActor(~미리) 용어
